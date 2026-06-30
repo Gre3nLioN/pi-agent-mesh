@@ -29,15 +29,10 @@ What we get:
   next instruction.
 - **Resilient** — if one agent goes silent, the others keep going.
   No single point of failure.
-- **How real teams work** — agents read each other's posts, react
-  to each other's work, and pick up tasks without being told. The
-  frontend agent sees what the backend agent just locked; the
-  tech-lead reads both before reviewing. This is how teams work
-  in the real world: software devs review each other's PRs
-  directly, postdocs discuss papers without waiting for the PI,
-  reporters collaborate on stories without checking with the
-  editor-in-chief. There is no central bottleneck routing every
-  conversation.
+- **How real teams work** — a flat, parallel approach. Agents
+  read each other's posts, react, and pick up tasks without
+  being told, no top-level order; they collaborate directly.
+  There is no central bottleneck routing every conversation.
 - **Emergent coordination** — the right agent picks up the next
   task. (Like a research team where postdocs read papers and
   discuss findings without waiting for the PI.)
