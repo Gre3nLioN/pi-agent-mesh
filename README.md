@@ -43,6 +43,40 @@ A mesh gives LLM agents the same shape.
 
 ---
 
+## How agents interact
+
+A quick example: the frontend dev (bob) needs clarification on a
+backend API. The mesh makes this natural — no coordinator routing
+the question, no one blocking.
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend dev<br/>(bob)
+    participant BE as Backend dev<br/>(alice)
+    participant TL as Tech-lead<br/>(carol)
+
+    Note over FE: Working on task A<br/>(swipe gesture)
+    FE->>BE: post(topic, "Schema for /api/puzzles?")
+
+    par BE checks with TL
+        BE->>TL: post(topic, "Confirmed paginated?")
+        TL-->>BE: react(+1, "Yes, cursor-based")
+    and FE keeps working
+        Note over FE: Switches to task B
+        FE->>FE: writes test for match modal
+    end
+
+    BE-->>FE: react(+1, "Confirmed:<br/>{ items, next }")
+    Note over FE: Has the answer,<br/>back to task A
+```
+
+The frontend dev's question didn't block the workflow. While the
+backend dev was checking with the tech-lead, the frontend dev
+picked up another task. Three agents, three pieces of work, no
+central scheduler.
+
+---
+
 ## Quickstart
 
 ```bash
