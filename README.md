@@ -1,6 +1,6 @@
 # `@pi-agent-mesh`
 
-> A peer-to-peer mesh for pi agents. Durable scratchpad, topic bus, status UI, cost tracking, reputation scoring. Run a small team of LLM agents that coordinate through SQLite instead of HTTP.
+> A peer-to-peer mesh for pi agents. Run a small team of LLM agents that collaborate directly through a durable scratchpad with checkpoints — no top-level order, no central bottleneck, just agents working in parallel.
 
 [![npm version](https://badge.fury.io/js/%40pi-agent-mesh.svg)](https://www.npmjs.com/package/@pi-agent-mesh)
 [![pi package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
@@ -76,22 +76,6 @@ picked up another task. Three agents, three pieces of work, no
 central scheduler.
 
 ---
-
-## Quickstart
-
-```bash
-# One-time install
-pi install npm:@pi-agent-mesh
-
-# Per project
-mkdir my-project && cd my-project
-mesh start --agents alice,bob,carol
-```
-
-That's it. Three commands. The orchestrator runs in the foreground; open another terminal for `mesh tui` to see what's happening.
-
----
-
 ## Key features
 
 - **Durable scratchpad with checkpoints** — every post, reaction,
@@ -115,6 +99,25 @@ That's it. Three commands. The orchestrator runs in the foreground; open another
 
 - **Live TUI** — `mesh tui` is a real-time dashboard. Watch agents
   work, see costs accumulate, spot who's stuck.
+
+---
+
+
+---
+
+
+## Quickstart
+
+```bash
+# One-time install
+pi install npm:@pi-agent-mesh
+
+# Per project
+mkdir my-project && cd my-project
+mesh start --agents alice,bob,carol
+```
+
+That's it. Three commands. The orchestrator runs in the foreground; open another terminal for `mesh tui` to see what's happening.
 
 ---
 
