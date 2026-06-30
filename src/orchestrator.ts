@@ -339,6 +339,13 @@ export class Orchestrator {
 		await agent.start();
 		this.agents.set(spec.name, agent);
 
+		// When the subprocess actually exits (crash, OOM, normal exit),
+		// drop it from the registry. Without this, listAgents() / TUI
+		// report ghost agents, auto-nudge keeps poking dead processes,
+		// and admin_inject returns "agent has exited" instead of
+		// "agent not found".
+		agent.on("exit", () => this.handleAgentExit(spec.name));
+
 		// Hook cost capture: every `turn_end` event from this agent
 		// carries the assistant message with `usage` (tokens + cost).
 		// We persist a row to the `costs` table.
@@ -1350,6 +1357,22 @@ export class Orchestrator {
 					);
 				});
 		}
+	}
+
+	/**
+	 * Remove a dead agent from the registry. Called by the `exit`
+	 * listener installed in spawnAgent(). Also clears the auto-nudge
+	 * bookkeeping so a re-spawned agent with the same name starts
+	 * with a clean "never nudged" state. `budgetHitsByAgent` is
+	 * intentionally NOT cleared — it tracks session-level totals
+	 * that are useful to see even after an agent dies.
+	 */
+	private handleAgentExit(name: string): void {
+		this.agents.delete(name);
+		this.lastAutoNudgeAt.delete(name);
+		process.stderr.write(
+			`[orch] agent "${name}" exited; removed from registry\n`,
+		);
 	}
 
 	/** Shutdown all agents and close the DB. */

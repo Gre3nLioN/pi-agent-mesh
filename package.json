@@ -63,7 +63,8 @@
     "test:auto-nudge": "tsx tests/auto-nudge-test.ts",
     "test:cost-rep": "tsx tests/cost-reputation-test.ts",
     "test:double-start": "tsx tests/double-start-test.ts",
-    "test": "tsx tests/edge-cases.ts && tsx tests/admin-cli-test.ts && tsx tests/confirmation-direct.ts && tsx tests/polish-direct.ts && tsx tests/cli-polish-test.ts && tsx tests/agent-prompt-test.ts && tsx tests/message-file-test.ts && tsx tests/checkpoint-test.ts && tsx tests/status-test.ts && tsx tests/auto-nudge-test.ts && tsx tests/cost-reputation-test.ts && tsx tests/double-start-test.ts",
+    "test:agent-exit": "tsx tests/agent-exit-test.ts",
+    "test": "tsx tests/edge-cases.ts && tsx tests/admin-cli-test.ts && tsx tests/confirmation-direct.ts && tsx tests/polish-direct.ts && tsx tests/cli-polish-test.ts && tsx tests/agent-prompt-test.ts && tsx tests/message-file-test.ts && tsx tests/checkpoint-test.ts && tsx tests/status-test.ts && tsx tests/auto-nudge-test.ts && tsx tests/cost-reputation-test.ts && tsx tests/double-start-test.ts && tsx tests/agent-exit-test.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
