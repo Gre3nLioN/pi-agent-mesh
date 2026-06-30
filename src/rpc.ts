@@ -25,7 +25,27 @@ export type AgentOpts = {
 	extensionPath?: string;
 	/** Text appended to the agent's system prompt via `--append-system-prompt`. */
 	appendSystemPrompt?: string;
+	/**
+	 * How long to wait for the agent to respond to a `send()` call
+	 * before rejecting the promise. Default 30s. Prevents unbounded
+	 * growth of the pending-responses map when an agent is wedged.
+	 */
+	responseTimeoutMs?: number;
+	/**
+	 * Hard cap on the number of in-flight requests to this agent.
+	 * `send()` rejects immediately when reached. Default 50. Each
+	 * pending entry holds ~300 bytes; the cap bounds orchestrator
+	 * memory under sustained agent unresponsiveness.
+	 */
+	maxPending?: number;
 };
+
+/** Default response timeout for AgentProcess.send(). */
+const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
+/** Default hard cap on the number of pending responses per agent. */
+const DEFAULT_MAX_PENDING = 50;
+/** When pending count exceeds this, log a warning. Hard cap is `DEFAULT_MAX_PENDING`. */
+const SOFT_PENDING_WARNING = 10;
 
 export type RpcResponse = {
 	id: string;
@@ -85,11 +105,15 @@ export class AgentProcess extends EventEmitter {
 	private exited = false;
 	private exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
 	private exitWaiters: Array<() => void> = [];
+	private readonly responseTimeoutMs: number;
+	private readonly maxPending: number;
 
 	constructor(opts: AgentOpts) {
 		super();
 		this.name = opts.name;
 		this.opts = opts;
+		this.responseTimeoutMs = opts.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS;
+		this.maxPending = opts.maxPending ?? DEFAULT_MAX_PENDING;
 	}
 
 	/** Spawn the pi subprocess and wire up stdio. */
@@ -189,31 +213,99 @@ export class AgentProcess extends EventEmitter {
 	}
 
 	/**
-	 * Send a command and await its response. Throws if the agent has
-	 * already exited or the response reports failure.
+	 * Send a command and await its response. Throws if:
+	 *   - the agent has exited
+	 *   - stdin is not writable
+	 *   - the pending-responses map is at the hard cap (rejects immediately)
+	 *   - backpressure on stdin doesn't drain within `responseTimeoutMs`
+	 *   - the agent doesn't respond within `responseTimeoutMs`
+	 *
+	 * The response timer is cleared when a reply arrives or on exit.
+	 * Pending entries are bounded by `maxPending` to keep orchestrator
+	 * memory under control when an agent is wedged.
 	 */
-	send<T = unknown>(command: Record<string, unknown>): Promise<T> {
+	async send<T = unknown>(command: Record<string, unknown>): Promise<T> {
 		if (this.exited) {
-			return Promise.reject(new Error(`agent "${this.name}" has exited`));
+			throw new Error(`agent "${this.name}" has exited`);
 		}
 		const proc = this.proc;
 		if (!proc || !proc.stdin || !proc.stdin.writable) {
-			return Promise.reject(new Error(`agent "${this.name}" stdin not writable`));
+			throw new Error(`agent "${this.name}" stdin not writable`);
+		}
+
+		// Hard cap on the number of in-flight requests. Prevents memory
+		// growth when the agent is wedged: every caller sees a clear
+		// "overloaded" error instead of silently queuing.
+		if (this.pending.size >= this.maxPending) {
+			throw new Error(
+				`agent "${this.name}" overloaded (${this.pending.size} pending); ` +
+					`max ${this.maxPending}, try again later`,
+			);
+		}
+
+		// Soft warning when the pending count is climbing but not yet at
+		// the cap. Gives the operator visibility into a degrading agent.
+		if (this.pending.size > SOFT_PENDING_WARNING) {
+			process.stderr.write(
+				`[mesh-rpc] agent "${this.name}" has ${this.pending.size} pending responses\n`,
+			);
 		}
 
 		const id = String(++this.idCounter);
+		const line = JSON.stringify({ id, ...command }) + "\n";
+
+		// Backpressure: if the write can't be accepted (kernel pipe full
+		// or stream's internal buffer above high-water mark), wait for
+		// 'drain' before queuing more. Race against the response timeout
+		// so a permanently-hung agent doesn't block the caller forever.
+		const writeOk = proc.stdin.write(line);
+		if (!writeOk) {
+			await Promise.race<void>([
+				new Promise<void>((resolve) => proc.stdin!.once("drain", () => resolve())),
+				new Promise<void>((_, reject) => {
+					setTimeout(
+						() =>
+							reject(
+								new Error(
+									`agent "${this.name}" stdin did not drain within ${this.responseTimeoutMs}ms (process likely hung)`,
+								),
+							),
+						this.responseTimeoutMs,
+					);
+				}),
+			]);
+		}
+
+		// Set up the response promise + timer. The timer rejects if the
+		// agent doesn't reply within `responseTimeoutMs`. The wrapper
+		// resolve/reject clear the timer on success/normal-failure paths
+		// (exit handler clears via the same wrapper).
 		return new Promise<T>((resolve, reject) => {
-			this.pending.set(id, {
-				resolve: (v) => resolve(v as T),
-				reject,
-				command: String(command.type ?? "?"),
-			});
-			const line = JSON.stringify({ id, ...command }) + "\n";
-			proc.stdin!.write(line, (err) => {
-				if (err) {
-					this.pending.delete(id);
-					reject(err);
+			const timer = setTimeout(() => {
+				if (this.pending.delete(id)) {
+					process.stderr.write(
+						`[mesh-rpc] agent "${this.name}" did not respond to command ` +
+							`"${String(command.type ?? "?")}" within ${this.responseTimeoutMs}ms; ` +
+							`pending=${this.pending.size}\n`,
+					);
+					reject(
+						new Error(
+							`agent "${this.name}" did not respond to command ` +
+								`"${String(command.type ?? "?")}" within ${this.responseTimeoutMs}ms`,
+						),
+					);
 				}
+			}, this.responseTimeoutMs);
+			this.pending.set(id, {
+				resolve: (v) => {
+					clearTimeout(timer);
+					resolve(v as T);
+				},
+				reject: (e) => {
+					clearTimeout(timer);
+					reject(e);
+				},
+				command: String(command.type ?? "?"),
 			});
 		});
 	}
