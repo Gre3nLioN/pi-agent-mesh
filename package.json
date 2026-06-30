@@ -1,0 +1,89 @@
+{
+  "name": "pi-agent-mesh",
+  "version": "0.1.0",
+  "description": "Peer-to-peer pi agent mesh — durable scratchpad + topic bus + status UI",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "agents",
+    "mesh",
+    "multi-agent",
+    "orchestration"
+  ],
+  "license": "MIT",
+  "author": "pi-agent-mesh contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pi-agent-mesh/pi-agent-mesh.git"
+  },
+  "homepage": "https://github.com/pi-agent-mesh/pi-agent-mesh#readme",
+  "bugs": {
+    "url": "https://github.com/pi-agent-mesh/pi-agent-mesh/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "mesh": "./bin/mesh"
+  },
+  "files": [
+    "index.ts",
+    "src/peer-extension.ts",
+    "src/rpc.ts",
+    "bin/",
+    "dist/",
+    "prompts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test:edge": "tsx tests/edge-cases.ts",
+    "test:discuss": "tsx tests/two-agent-discussion.ts",
+    "test:budget": "tsx tests/budget-direct.ts",
+    "test:confirm": "tsx tests/confirmation-direct.ts",
+    "test:admin": "tsx tests/admin-cli-test.ts",
+    "test:polish": "tsx tests/polish-direct.ts",
+    "test:cli-polish": "tsx tests/cli-polish-test.ts",
+    "test:agent-prompt": "tsx tests/agent-prompt-test.ts",
+    "test:message-file": "tsx tests/message-file-test.ts",
+    "test:checkpoint": "tsx tests/checkpoint-test.ts",
+    "test:status": "tsx tests/status-test.ts",
+    "test:auto-nudge": "tsx tests/auto-nudge-test.ts",
+    "test:cost-rep": "tsx tests/cost-reputation-test.ts",
+    "test": "tsx tests/edge-cases.ts && tsx tests/admin-cli-test.ts && tsx tests/confirmation-direct.ts && tsx tests/polish-direct.ts && tsx tests/cli-polish-test.ts && tsx tests/agent-prompt-test.ts && tsx tests/message-file-test.ts && tsx tests/checkpoint-test.ts && tsx tests/status-test.ts && tsx tests/auto-nudge-test.ts && tsx tests/cost-reputation-test.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
