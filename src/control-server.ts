@@ -9,7 +9,7 @@
  * Stage 3: adds `create_topic`, `read_entry`, `read_topic`.
  */
 
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, connect, type Server, type Socket } from "node:net";
 import { unlinkSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Database as DB } from "better-sqlite3";
@@ -77,12 +77,20 @@ export class ControlServer {
 	constructor(private opts: ControlServerOptions) {}
 
 	async start(): Promise<void> {
-		// Clean up any stale socket file from a previous run.
+		// If a socket file already exists, decide whether it's live (refuse
+		// to clobber) or stale (unlink and rebind, the crash-recovery path).
 		if (existsSync(this.opts.socketPath)) {
+			const alive = await this.probeSocket();
+			if (alive) {
+				throw new Error(
+					`mesh already running in this data dir (socket in use: ${this.opts.socketPath}). ` +
+						`Run \`mesh stop\` to shut it down, or use a different --data-dir.`,
+				);
+			}
 			try {
 				unlinkSync(this.opts.socketPath);
 			} catch {
-				// ignore
+				// ignore — listen() will produce a clearer error
 			}
 		}
 
@@ -92,6 +100,31 @@ export class ControlServer {
 			this.server.listen(this.opts.socketPath, () => {
 				this.server?.off("error", reject);
 				resolve();
+			});
+		});
+	}
+
+	/**
+	 * Probe whether an orchestrator is actively listening on the
+	 * socket path. Returns true on a successful connect within 200ms.
+	 * Used to distinguish a live orchestrator (refuse to clobber) from
+	 * a stale socket file left over from a hard crash (safe to unlink).
+	 */
+	private probeSocket(): Promise<boolean> {
+		return new Promise((resolve) => {
+			const sock = connect(this.opts.socketPath);
+			const timer = setTimeout(() => {
+				sock.destroy();
+				resolve(false);
+			}, 200);
+			sock.on("connect", () => {
+				clearTimeout(timer);
+				sock.end();
+				resolve(true);
+			});
+			sock.on("error", () => {
+				clearTimeout(timer);
+				resolve(false);
 			});
 		});
 	}
