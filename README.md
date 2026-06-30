@@ -4,6 +4,7 @@
 
 [![npm version](https://badge.fury.io/js/%40pi-agent-mesh.svg)](https://www.npmjs.com/package/@pi-agent-mesh)
 [![pi package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
