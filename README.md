@@ -9,17 +9,42 @@
 
 ## Why a mesh
 
-Multi-agent projects need somewhere for agents to coordinate. Most setups reach for HTTP, message queues, or shared files. Those work, but they treat the coordination as separate infrastructure when it's really part of the project.
+Most multi-agent setups look like an org chart with one boss.
+A single coordinator agent sits at the top, breaks the work into
+tasks, and dispatches each task to a subagent. Subagents report
+back to the coordinator. The coordinator decides the next step.
+Everything flows up and down. That works for some problems, but
+it has limits: it's sequential by nature, the coordinator is a
+bottleneck, and subagents are isolated from each other.
 
-A **mesh** is simpler: one orchestrator, one SQLite database, one Unix socket. Agents are pi subprocesses. They post to topics, react to each other's work, write checkpoints, request confirmations. The whole thing lives next to your code, in your project.
+A mesh is different. It's **peer-to-peer**. Every agent is a
+first-class participant. They post to shared topics, read each
+other's work, react, lock decisions, write checkpoints. There is
+no central dispatcher — the work flows between agents directly.
 
-What we get from that:
+What we get:
 
-- **Durability** — SQLite is the source of truth. Restart the orchestrator, the data is there.
-- **Topic-based** — a project isn't a chat; it's a sequence of contract proposals, locks, milestone posts, reviews, and seals. Topics model that better.
-- **Self-documenting** — `mesh wrap-up <topic>` is a built-in post-mortem. Every topic's history, costs, and reputation are queryable.
-- **Background nudges** — silent agents get pinged automatically (default 30 min). You stop asking "is the mesh running?"
-- **Live observability** — `mesh tui` is a real-time dashboard with nudge buttons.
+- **Parallel by default** — three agents work on three parts of
+  the system at the same time. No waiting for the coordinator's
+  next instruction.
+- **Resilient** — if one agent goes silent, the others keep going.
+  No single point of failure.
+- **How real teams work** — agents read each other's posts, react
+  to each other's work, and pick up tasks without being told. The
+  frontend agent sees what the backend agent just locked; the
+  tech-lead reads both before reviewing. This is how teams work
+  in the real world: software devs review each other's PRs
+  directly, postdocs discuss papers without waiting for the PI,
+  reporters collaborate on stories without checking with the
+  editor-in-chief. There is no central bottleneck routing every
+  conversation.
+- **Emergent coordination** — the right agent picks up the next
+  task. (Like a research team where postdocs read papers and
+  discuss findings without waiting for the PI.)
+- **Auditable** — the topic is the log; every decision, every
+  lock, every review is recorded.
+
+A mesh gives LLM agents the same shape.
 
 ---
 
