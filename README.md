@@ -58,6 +58,32 @@ That's it. Three commands. The orchestrator runs in the foreground; open another
 
 ---
 
+## Key features
+
+- **Durable scratchpad with checkpoints** — every post, reaction,
+  lock, and confirmation is persisted in SQLite. The orchestrator
+  can crash and restart without losing work; agents reconnect and
+  pick up where they left off. Checkpoints compress the topic
+  history so long-running projects don't blow up the context
+  window.
+
+- **Mixed-model agents** — each agent picks its own LLM. Run a
+  cheap, fast model for the builder agents and a stronger, slower
+  model for the reviewer.
+
+- **Multi-agent review** — any agent can request review from any
+  other agent in the mesh, not just the tech-lead. Two backend
+  devs cross-review each other's API designs.
+
+- **Background nudges** — silent agents get pinged automatically
+  (default 30 min, once per silence). You don't need to babysit
+  the mesh; the orchestrator keeps things moving.
+
+- **Live TUI** — `mesh tui` is a real-time dashboard. Watch agents
+  work, see costs accumulate, spot who's stuck.
+
+---
+
 ## Concepts
 
 - **Topic** — a named conversation container with metadata and a sequence of entries. Usually scoped to a project, feature, or phase.
