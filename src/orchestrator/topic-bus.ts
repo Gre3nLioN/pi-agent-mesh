@@ -99,6 +99,9 @@ export async function handleNewEntry(ctx: TopicBusCtx, entry: EntryRow): Promise
 	// Build the notify set:
 	//   - everyone in `involved` if notify_on_post is on
 	//   - everyone in `mentions` always
+	//   - the `to:` agent for `kind='handoff'` entries (the structured
+	//     handoff convention; the control-server validated that the
+	//     agent is in `topic_involved` at write time)
 	//   - minus the author (don't notify yourself)
 	const notifySet = new Set<string>();
 	if (topic.notify_on_post === 1) {
@@ -108,6 +111,12 @@ export async function handleNewEntry(ctx: TopicBusCtx, entry: EntryRow): Promise
 	}
 	for (const name of mentions) {
 		if (name !== entry.author) notifySet.add(name);
+	}
+	if (entry.kind === "handoff") {
+		const toMatch = (entry.body ?? "").match(/^to:\s*(\S+)/m);
+		if (toMatch && toMatch[1] !== entry.author) {
+			notifySet.add(toMatch[1]);
+		}
 	}
 
 	// Send a notification to each agent. Fire and forget.

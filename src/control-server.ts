@@ -224,7 +224,15 @@ export class ControlServer {
 	}
 
 	private handlePost(req: any): { ok: boolean; data?: unknown; error?: string } {
-		const { topic_id, body, author, mentions, requires_confirmation_from } = req;
+		const { topic_id, body, author, mentions, requires_confirmation_from, kind: rawKind } = req;
+
+		// Default kind to 'post'. Only 'post' and 'handoff' are accepted here;
+		// other kinds (react, confirmation, summary, handoff, checkpoint) have
+		// their own RPCs/tools.
+		const kind: "post" | "handoff" = rawKind === "handoff" ? "handoff" : "post";
+		if (rawKind !== undefined && rawKind !== "post" && rawKind !== "handoff") {
+			return { ok: false, error: `kind "${rawKind}" is not valid for the post tool; use 'post' or 'handoff'` };
+		}
 
 		// Validate.
 		if (typeof topic_id !== "string" || topic_id.length === 0) {
@@ -274,6 +282,43 @@ export class ControlServer {
 			confJson = JSON.stringify(requiredAgents);
 		}
 
+		// Validate handoff convention (kind='handoff' only).
+		// The body must start with `to: <agent_name>` and the named agent
+		// must be in the topic's `topic_involved` list. See design § D1–D4.
+		if (kind === "handoff") {
+			const toMatch = body.match(/^to:\s*(\S+)/m);
+			if (!toMatch) {
+				return {
+					ok: false,
+					error: "kind='handoff' requires a 'to: <agent_name>' line in the body",
+				};
+			}
+			const toAgent = toMatch[1];
+			// The topic must exist (it might be auto-created below, but for
+			// handoffs we require the topic to already exist with the target
+			// involved). If the topic doesn't exist yet, the `to:` agent
+			// can't be in its involved list, so reject.
+			const involvedRows = this.opts.db
+				.prepare(
+					"SELECT agent_name FROM topic_involved WHERE topic_id = ? ORDER BY agent_name",
+				)
+				.all(topic_id) as Array<{ agent_name: string }>;
+			if (involvedRows.length === 0) {
+				return {
+					ok: false,
+					error: `handoff 'to: ${toAgent}' rejected: topic "${topic_id}" does not exist or has no involved agents; create the topic and add ${toAgent} via add_to_topic first`,
+				};
+			}
+			const involved = involvedRows.map((r) => r.agent_name);
+			if (!involved.includes(toAgent)) {
+				return {
+					ok: false,
+					error: `handoff 'to: ${toAgent}' is not an involved agent in topic "${topic_id}"`,
+					data: { involved_agents: involved },
+				};
+			}
+		}
+
 		const db = this.opts.db;
 		const now = Date.now();
 		const id = randomUUID();
@@ -308,9 +353,9 @@ export class ControlServer {
 		const info = db
 			.prepare(
 				`INSERT INTO entries (id, ts, topic_id, author, kind, body, parent_entry, mentions, requires_confirmation_from)
-				 VALUES (?, ?, ?, ?, 'post', ?, NULL, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
 			)
-			.run(id, ts, topic_id, author, body, mentionsJson, confJson);
+			.run(id, ts, topic_id, author, kind, body, mentionsJson, confJson);
 		const seq = Number(info.lastInsertRowid);
 
 		const entry: EntryRow = {
@@ -318,7 +363,7 @@ export class ControlServer {
 			ts,
 			topic_id,
 			author,
-			kind: "post",
+			kind,
 			body,
 			parent_entry: null,
 			mentions: mentionsJson,

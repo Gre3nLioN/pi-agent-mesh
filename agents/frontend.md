@@ -224,3 +224,44 @@ A good frontend checkpoint looks like:
 ```
 
 Re-state the design system on every checkpoint — the chain should stand alone.
+
+## Structured handoff (recommended)
+
+When you need to **transfer ownership of work** to another agent in a
+topic, use a `kind='handoff'` post. The orchestrator validates the
+handoff at write time and routes it to the named agent.
+
+**Body format** (YAML-style, `to:` is required):
+
+```
+to: bob
+from: alice
+summary: Finish the /users endpoint and add tests
+acceptance: Tests must pass and code review from carol
+```
+
+- `to: <agent_name>` — **required**. The named agent must already be
+  in the topic's `topic_involved` list (add them via `add_to_topic`
+  first if not). If the agent isn't involved, the post is rejected
+  with a list of valid involved agents.
+- `from:`, `summary:`, `acceptance:` — **optional, informational**.
+- The target agent responds with a normal `post` (no formal ack flow).
+
+**How to post a handoff**:
+
+```
+post(topic_id="api-v2", kind="handoff",
+     body="to: bob\nfrom: alice\nsummary: ...",
+     mentions=["carol"])    // optional: cc carol
+```
+
+The `mentions` array still works for cc's alongside the `to:` field.
+
+**When to use a handoff vs. a normal post:**
+- Use a handoff when **ownership is changing** ("bob, you're up next").
+- Use a normal post for **discussion, decisions, and updates** that
+  don't transfer ownership.
+
+The handoff entry is immutable — there's no `accept_handoff` or
+`reject_handoff` tool. The target agent simply picks up the work and
+posts their progress in the same topic.

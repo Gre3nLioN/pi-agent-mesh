@@ -291,7 +291,17 @@ export default function (pi: ExtensionAPI) {
 				"proceeding. For a normal ping that does not block you, use `mentions` " +
 				"instead. Setting `requires_confirmation_from` adds ~30-60s of latency even " +
 				"if the agent doesn't call the `confirm` tool, because the entry times out " +
-				"and you get a notification.",
+				"and you get a notification. \n\n" +
+				"To HAND OFF work to a specific agent, set `kind='handoff'`. The body MUST " +
+				"start with `to: <agent_name>` on its own line. The orchestrator validates " +
+				"that the named agent is in the topic's involved list; if not, the post is " +
+				"rejected with a list of valid agents. The orchestrator then routes the " +
+				"handoff to the named agent regardless of `mentions` or `notify_on_post`. " +
+				"Use YAML-style body for the handoff:\n" +
+				"  to: bob\n" +
+				"  from: alice\n" +
+				"  summary: Finish the /users endpoint and add tests\n" +
+				"  acceptance: Tests must pass and code review from carol",
 		parameters: Type.Object({
 			topic_id: Type.String({
 				description:
@@ -299,9 +309,16 @@ export default function (pi: ExtensionAPI) {
 				minLength: 1,
 			}),
 			body: Type.String({
-				description: "The message body. Plain text.",
+				description: "The message body. Plain text. For kind='handoff', must start with 'to: <agent_name>' on its own line.",
 				minLength: 1,
 			}),
+			kind: Type.Optional(
+				Type.Union([Type.Literal("post"), Type.Literal("handoff")], {
+					description:
+						"Entry kind. Defaults to 'post'. Set to 'handoff' to hand off work to a " +
+							"named agent; the body must start with 'to: <agent_name>'.",
+				}),
+			),
 			mentions: Type.Optional(
 				Type.Array(Type.String(), {
 					description:
@@ -324,6 +341,7 @@ export default function (pi: ExtensionAPI) {
 				{
 					topic_id: params.topic_id,
 					body: params.body,
+					kind: params.kind,
 					mentions: params.mentions,
 					requires_confirmation_from: params.requires_confirmation_from,
 				},
