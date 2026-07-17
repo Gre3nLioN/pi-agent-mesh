@@ -16,6 +16,7 @@
  * No LLM calls are made — we just verify the prompt plumbing.
  */
 import { Orchestrator } from "../src/orchestrator.js";
+import { DEFAULT_MESH_GUIDANCE as DEFAULT_MESH_GUIDANCE_FROM_ORCHESTRATOR } from "../src/orchestrator/defaults.js";
 import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -63,12 +64,13 @@ async function makeHarness(suffix: string): Promise<Harness> {
 }
 
 function defaultMeshFragment(): string {
-	// Read DEFAULT_MESH_GUIDANCE from the source for verification.
-	// (It's a stable string; we test for fragments rather than full equality
-	// so this test doesn't break on cosmetic edits to DEFAULT_MESH_GUIDANCE.)
-	const src = readFileSync(resolve("src/orchestrator.ts"), "utf8");
-	const m = src.match(/const DEFAULT_MESH_GUIDANCE = `([\s\S]*?)`\.trim\(\)/);
-	return m ? m[1].trim() : "";
+	// Use the exported constant directly. The constant moved to
+	// src/orchestrator/defaults.ts in the 4-way split; we import
+	// it through the facade's re-export so this test stays decoupled
+	// from the internal module structure.
+	// (It's a stable string; we test for fragments rather than full
+	// equality so this test doesn't break on cosmetic edits.)
+	return DEFAULT_MESH_GUIDANCE_FROM_ORCHESTRATOR;
 }
 
 async function testFileLoaded(): Promise<void> {
