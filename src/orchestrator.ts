@@ -101,6 +101,12 @@ export class Orchestrator {
 
 	async start(): Promise<void> {
 		await this.control.start();
+		// Reconcile the persistent agent registry on startup. Marks any
+		// row whose process is gone as 'exited' so the rest of the
+		// orchestrator sees accurate liveness. Runs once, before the
+		// background ticks start, so auto-nudge doesn't try to nudge
+		// dead processes. See design § D3.
+		lifecycle.reconcileAgents(this as unknown as LifecycleCtx);
 		// Background tick: every second, scan for timed-out pending
 		// confirmations. Lightweight (a single indexed query) so 1Hz is fine.
 		this.confirmationTickHandle.current = setInterval(() => {

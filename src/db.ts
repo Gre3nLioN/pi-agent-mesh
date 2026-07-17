@@ -111,6 +111,18 @@ CREATE TABLE IF NOT EXISTS nudges (
 );
 CREATE INDEX IF NOT EXISTS idx_nudges_agent_ts ON nudges(agent, ts);
 CREATE INDEX IF NOT EXISTS idx_nudges_topic ON nudges(topic_id);
+
+-- Agent registry: persists the orchestrator's in-memory agent map so
+-- agents that survive an orchestrator restart are still discoverable.
+-- The orchestrator writes here on spawn and exit, and reconciles on
+-- startup via process.kill(pid, 0). See design § D1, D2.
+CREATE TABLE IF NOT EXISTS agents (
+  name        TEXT PRIMARY KEY,
+  pid         INTEGER NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('alive', 'exited')),
+  started_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 `;
 
 /**

@@ -99,6 +99,14 @@ export class AgentProcess extends EventEmitter {
 	readonly opts: AgentOpts;
 
 	private proc: ChildProcess | null = null;
+
+	/** Process id of the underlying pi subprocess, or undefined if the
+	 *  agent hasn't been started yet. Exposed for the orchestrator's
+	 *  persistent agent registry (`agents` table) so reconcile can
+	 *  check liveness via `process.kill(pid, 0)`. */
+	get pid(): number | undefined {
+		return this.proc?.pid;
+	}
 	private idCounter = 0;
 	private pending = new Map<string, Pending>();
 	private lineBuffer = "";

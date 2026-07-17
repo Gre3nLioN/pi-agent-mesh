@@ -124,6 +124,18 @@ export async function spawnAgent(
 	await agent.start();
 	ctx.agents.set(spec.name, agent);
 
+	// Persist the agent to the `agents` table so it survives an
+	// orchestrator restart. INSERT OR REPLACE handles re-spawn
+	// (same name, new pid) by overwriting the row. See design § D2.
+	// `agent.pid ?? -1` is a safety net; if pid is ever undefined,
+	// process.kill(-1, 0) will throw and the row is marked 'exited'
+	// on the next reconcile. See design § Open Questions Q3.
+	ctx.db
+		.prepare(
+			"INSERT OR REPLACE INTO agents (name, pid, status, started_at) VALUES (?, ?, 'alive', ?)",
+		)
+		.run(spec.name, agent.pid ?? -1, Date.now());
+
 	// When the subprocess actually exits (crash, OOM, normal exit),
 	// drop it from the registry. Without this, listAgents() / TUI
 	// report ghost agents, auto-nudge keeps poking dead processes,
@@ -199,6 +211,13 @@ function attachCostAttribution(
 export function handleAgentExit(ctx: LifecycleCtx, name: string): void {
 	ctx.agents.delete(name);
 	clearAutoNudgeStateFor(ctx, name);
+	// Mark the agent row as 'exited' in the persistent registry.
+	// The row stays in the table (no DELETE) so historical
+	// reputation queries can still see it; the status column
+	// is the source of truth for "is this agent currently live?".
+	ctx.db
+		.prepare("UPDATE agents SET status='exited' WHERE name=?")
+		.run(name);
 	process.stderr.write(
 		`[orch] agent "${name}" exited; removed from registry\n`,
 	);
@@ -634,3 +653,58 @@ export function adminReputationStatus(ctx: Pick<LifecycleCtx, "db">): {
 // Re-export DEFAULT_AUTO_NUDGE_MESSAGE so the facade can build the autoNudge
 // default without importing from defaults.ts twice.
 export { DEFAULT_AUTO_NUDGE_MESSAGE };
+
+// ──────────────────────────────────────────────────────────────────────────
+// Persistent registry: reconcile on startup
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Reconcile the `agents` table against reality on orchestrator startup.
+ *
+ * For every row with `status='alive'`, check whether the underlying
+ * process is still running via `process.kill(pid, 0)`. If the process
+ * is gone, mark the row as `exited`. If it's still alive, leave the
+ * row as `alive` (the orchestrator's in-memory `agents` map will
+ * repopulate as agents reconnect — see design § Open Questions Q1).
+ *
+ * Called once from `Orchestrator.start()` before the background
+ * ticks start. The reconcile is fast: a single SELECT + N process
+ * system calls. See design § D3.
+ */
+export function reconcileAgents(ctx: LifecycleCtx): void {
+	const rows = ctx.db
+		.prepare("SELECT name, pid FROM agents WHERE status='alive'")
+		.all() as Array<{ name: string; pid: number }>;
+	if (rows.length === 0) return;
+	const mark = ctx.db.prepare("UPDATE agents SET status='exited' WHERE name=?");
+	for (const row of rows) {
+		if (isProcessAlive(row.pid)) {
+			process.stderr.write(
+				`[orch:reconcile] agent "${row.name}" (pid=${row.pid}) still alive, leaving as 'alive'\n`,
+			);
+		} else {
+			mark.run(row.name);
+			process.stderr.write(
+				`[orch:reconcile] agent "${row.name}" (pid=${row.pid}) is dead, marked 'exited'\n`,
+			);
+		}
+	}
+}
+
+/**
+ * Check whether a process is alive using `process.kill(pid, 0)`.
+ * Signal 0 is a POSIX existence check: it doesn't actually send a
+ * signal, it just checks whether the pid exists and whether we have
+ * permission to signal it. Returns `true` for either success (process
+ * exists, we own it) or `EPERM` (process exists, we can't signal it).
+ * Returns `false` for any other error (typically `ESRCH` = no such pid).
+ */
+function isProcessAlive(pid: number): boolean {
+	if (pid < 0) return false; // sentinel value; never a real pid
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err: any) {
+		return err?.code === "EPERM";
+	}
+}
