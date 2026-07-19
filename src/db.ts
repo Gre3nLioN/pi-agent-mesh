@@ -189,6 +189,53 @@ const MIGRATIONS: Array<{ name: string; run: (db: DB) => void }> = [
 			`);
 		},
 	},
+	{
+		name: "add-rejection-kind-and-backfill",
+		run: (db) => {
+			// Detect whether the entries.kind CHECK constraint already
+			// includes 'rejection'. If so, this migration has already
+			// run; bail out.
+			const row = db
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries'",
+				)
+				.get() as { sql?: string } | undefined;
+			if (!row || !row.sql) return;
+			if (row.sql.includes("'rejection'")) return; // already applied
+
+			// Recreate the entries table with 'rejection' in the CHECK
+			// constraint, then backfill historical rows that were
+			// written with `kind='react'` and a REQUEST_CHANGES body.
+			// See design § D1, D2 in the kind-react-schema-cleanup change.
+			db.exec(`
+				BEGIN;
+				CREATE TABLE entries_new (
+					seq INTEGER PRIMARY KEY AUTOINCREMENT,
+					id TEXT UNIQUE NOT NULL,
+					ts INTEGER NOT NULL,
+					topic_id TEXT NOT NULL,
+					author TEXT NOT NULL,
+					kind TEXT NOT NULL CHECK (kind IN ('post', 'react', 'confirmation', 'summary', 'handoff', 'checkpoint', 'rejection')),
+					body TEXT NOT NULL,
+					parent_entry TEXT,
+					mentions TEXT NOT NULL DEFAULT '[]',
+					requires_confirmation_from TEXT NOT NULL DEFAULT '[]',
+					FOREIGN KEY (topic_id) REFERENCES topics(id)
+				);
+				INSERT INTO entries_new SELECT * FROM entries;
+				DROP TABLE entries;
+				ALTER TABLE entries_new RENAME TO entries;
+				CREATE INDEX IF NOT EXISTS idx_entries_topic_seq ON entries(topic_id, seq);
+				CREATE INDEX IF NOT EXISTS idx_entries_id        ON entries(id);
+				CREATE INDEX IF NOT EXISTS idx_entries_author   ON entries(author, seq);
+				CREATE INDEX IF NOT EXISTS idx_entries_parent   ON entries(parent_entry);
+
+				-- Backfill: historical REQUEST_CHANGES reactions become kind='rejection'.
+				UPDATE entries SET kind = 'rejection' WHERE kind = 'react' AND body LIKE '%REQUEST_CHANGES%';
+				COMMIT;
+			`);
+		},
+	},
 ];
 
 export function openDb(path: string): DB {

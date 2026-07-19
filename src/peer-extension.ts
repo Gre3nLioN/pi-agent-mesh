@@ -667,6 +667,33 @@ export default function (pi: ExtensionAPI) {
 		}),
 	});
 
+	// Tool: request_changes(entry_id, summary?)
+	pi.registerTool({
+		name: "request_changes",
+		label: "Request Changes",
+		description:
+			"Record a formal review rejection on an existing entry (kind='rejection'). " +
+				"Use this when you want to formally reject a peer's work and have the rejection " +
+				"count toward their reputation score (the `mesh reputation` calculation reads " +
+				"from `kind='rejection'` rows). The rejection is silent — the peer sees it on " +
+				"their next read of the topic. Prefer this over `react(entry_id, 'REQUEST_CHANGES: ...')`. " +
+				"If you don't supply a summary, the body defaults to 'REQUEST_CHANGES' so the " +
+				"rejection is still recognizable in the topic log.",
+		parameters: Type.Object({
+			entry_id: Type.String({ description: "The entry id to reject.", minLength: 1 }),
+			summary: Type.Optional(
+				Type.String({
+					description: "Short summary of what needs to change. Default 'REQUEST_CHANGES' if omitted. Keep it under 256 chars.",
+				}),
+			),
+		}),
+		execute: withBudget("request_changes", async (_callId, params) => {
+			return rpc("request_changes", { entry_id: params.entry_id, body: params.summary }, (data: any) =>
+				`requested changes on ${data.parent_entry}: ${JSON.stringify(data.body)}`,
+			);
+		}),
+	});
+
 	// Tool: close_topic(topic_id)
 	pi.registerTool({
 		name: "close_topic",

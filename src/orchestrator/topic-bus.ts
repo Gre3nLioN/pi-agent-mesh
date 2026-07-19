@@ -68,6 +68,16 @@ export async function handleNewEntry(ctx: TopicBusCtx, entry: EntryRow): Promise
 		);
 		return;
 	}
+	if (entry.kind === "rejection") {
+		// Rejections are silent — the parent author sees them on next
+		// read. The reputation calculation reads kind='rejection' rows
+		// (added by the kind-react-schema-cleanup change). This branch
+		// is parallel to the kind='react' branch above.
+		process.stderr.write(
+			`[orch:rejection] ${entry.author} requested changes on ${entry.parent_entry}: ${entry.body}\n`,
+		);
+		return;
+	}
 	// Confirmations are routed to a different handler; regular posts
 	// get the topic-bus notification path.
 	if (entry.kind === "confirmation") {

@@ -204,6 +204,8 @@ export class ControlServer {
 				return this.handleReadInbox(req);
 			case "react":
 				return this.handleReact(req);
+			case "request_changes":
+				return this.handleRequestChanges(req);
 			case "close_topic":
 				return this.handleCloseTopic(req);
 			case "search_topics":
@@ -1124,6 +1126,52 @@ export class ControlServer {
 		return {
 			ok: true,
 			data: { id, ts, topic_id: parent.topic_id, parent_entry: entry_id, body: reactionBody },
+		};
+	}
+
+	private handleRequestChanges(req: any): { ok: boolean; data?: unknown; error?: string } {
+		// Same shape as handleReact but writes kind='rejection' (the new
+		// explicit kind for formal review rejections, see design § D4 in
+		// the kind-react-schema-cleanup change). The default body is
+		// 'REQUEST_CHANGES' instead of 'ack' so the row is recognizable
+		// in the topic log even without an explicit summary.
+		const { entry_id, author, body } = req;
+		if (typeof entry_id !== "string" || entry_id.length === 0) {
+			return { ok: false, error: "entry_id is required" };
+		}
+		if (typeof author !== "string" || author.length === 0) {
+			return { ok: false, error: "author is required" };
+		}
+
+		const db = this.opts.db;
+		const parent = db
+			.prepare("SELECT id, ts, topic_id, author, kind FROM entries WHERE id = ?")
+			.get(entry_id) as { id: string; ts: number; topic_id: string; author: string; kind: string } | undefined;
+		if (!parent) {
+			return { ok: false, error: `entry "${entry_id}" not found` };
+		}
+
+		// Rejections are silent — the orchestrator does NOT push a
+		// notification to the parent author. The author sees the
+		// rejection next time they read the topic. The reputation
+		// calculation picks it up from the new kind.
+		const rejectionBody = (typeof body === "string" && body.length > 0) ? body : "REQUEST_CHANGES";
+		const id = randomUUID();
+		const ts = Date.now();
+		db.prepare(
+			`INSERT INTO entries (id, ts, topic_id, author, kind, body, parent_entry, mentions, requires_confirmation_from)
+			 VALUES (?, ?, ?, ?, 'rejection', ?, ?, '[]', '[]')`,
+		).run(id, ts, parent.topic_id, author, rejectionBody, entry_id);
+
+		this.opts.onPost?.({
+			id, ts, topic_id: parent.topic_id, author, kind: "rejection",
+			body: rejectionBody, parent_entry: entry_id,
+			mentions: "[]", requires_confirmation_from: "[]",
+		});
+
+		return {
+			ok: true,
+			data: { id, ts, topic_id: parent.topic_id, parent_entry: entry_id, body: rejectionBody },
 		};
 	}
 

@@ -598,12 +598,14 @@ export function adminCostStatus(
  *   + 0.1 * posts                    (small bonus for activity)
  *
  * NOTE on schema smell (design D8): the `rejection_rate` calculation
- * reads `kind='react'` rows from the `entries` table whose body matches
- * `%REQUEST_CHANGES%` and joins back via `parent_entry` to attribute
- * the rejection to the parent author. These rows are written by agent
- * reactions (via peer-extension), not by anything in this module. The
- * smell is that "rejection" and "reaction" share the `kind='react'`
- * row kind. Deferred to a future change; see design.md § D8.
+ * reads `kind='rejection'` rows from the `entries` table and joins
+ * back via `parent_entry` to attribute the rejection to the parent
+ * author. The `kind-react-schema-cleanup` change moved these from
+ * `kind='react' AND body LIKE '%REQUEST_CHANGES%'` to the explicit
+ * `kind='rejection'` kind, separating user reactions (acks, +1s)
+ * from formal review rejections. The `react` tool still writes
+ * `kind='react'` for user reactions but those rows are no longer
+ * counted toward rejection rate.
  */
 export function adminReputationStatus(ctx: Pick<LifecycleCtx, "db">): {
 	per_agent: Array<{
@@ -636,19 +638,18 @@ export function adminReputationStatus(ctx: Pick<LifecycleCtx, "db">): {
 		)
 		.all() as Array<{ agent: string; posts: number; checkpoints: number; topics: number; last_active_ms: number }>;
 
-	// Rejections: a `react` entry whose body is REQUEST_CHANGES on
-	// an entry whose author is the target. We don't track reaction
-	// targets explicitly in the schema, so we approximate by counting
-	// react entries on posts by the target agent via parent_entry.
-	// For v1 we use a simpler approximation: count REQUEST_CHANGES
-	// reactions globally and attribute to the agent whose post it
-	// followed (parent_entry author).
+	// Rejections: a `kind='rejection'` entry on an entry whose author
+	// is the target. We don't track rejection targets explicitly in the
+	// schema, so we attribute by joining back via parent_entry to the
+	// parent entry's author. The `kind-react-schema-cleanup` change
+	// moved these from `kind='react' AND body LIKE '%REQUEST_CHANGES%'`
+	// to the explicit `kind='rejection'` kind.
 	const rejections = ctx.db
 		.prepare(
 			`SELECT e2.author AS agent, COUNT(*) AS n
 			 FROM entries e1
 			 JOIN entries e2 ON e2.id = e1.parent_entry
-			 WHERE e1.kind = 'react' AND e1.body LIKE '%REQUEST_CHANGES%'
+			 WHERE e1.kind = 'rejection'
 			 GROUP BY e2.author`,
 		)
 		.all() as Array<{ agent: string; n: number }>;
