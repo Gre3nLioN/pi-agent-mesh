@@ -386,6 +386,236 @@ function findRecentEntriesFromOthers(
 	return rows.map((r) => ({ ...r, agoMin: Math.max(0, Math.round((now - r.ts) / 60000)) }));
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Auto topic-lifecycle: auto-checkpoint and auto-close
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Auto-checkpoint threshold: if a topic has this many entries since its
+ *  last checkpoint, post an auto-checkpoint. Hard-coded for v1. */
+const AUTO_CHECKPOINT_THRESHOLD = 30;
+
+/** Auto-close threshold: a topic idle for this long with no live agents
+ *  is auto-closed. Hard-coded for v1 (24 hours). */
+const AUTO_CLOSE_IDLE_MS = 24 * 60 * 60 * 1000;
+
+/** Sentinel author for auto-generated entries. Lets the LLM and the TUI
+ *  distinguish server-side entries from agent-authored ones. */
+const AUTO_AUTHOR = "orchestrator";
+
+/**
+ * Background tick: for each open topic with no recent checkpoint,
+ * post an auto-checkpoint on the orchestrator's behalf. The body
+ * is auto-generated from DB queries (no LLM involvement). See
+ * design § D1, D2, D3 in the auto-topic-lifecycle change.
+ *
+ * Skips topics with fewer than AUTO_CHECKPOINT_THRESHOLD entries
+ * since the last checkpoint. The LLM's manual write_checkpoint
+ * resets the count, so the next auto-checkpoint fires only after
+ * AUTO_CHECKPOINT_THRESHOLD more entries.
+ */
+export function autoCheckpoint(ctx: LifecycleCtx): void {
+	const now = Date.now();
+	const insertEntry = ctx.db.prepare(
+		`INSERT INTO entries (id, ts, topic_id, author, kind, body, parent_entry, mentions, requires_confirmation_from)
+		 VALUES (?, ?, ?, ?, 'checkpoint', ?, NULL, '[]', '[]')`,
+	);
+	const updateLastActivity = ctx.db.prepare(
+		"UPDATE topics SET last_activity_at = ? WHERE id = ?",
+	);
+
+	const openTopics = ctx.db
+		.prepare("SELECT id FROM topics WHERE status != 'closed'")
+		.all() as Array<{ id: string }>;
+
+	for (const t of openTopics) {
+		const lastCheckpoint = ctx.db
+			.prepare(
+				"SELECT MAX(seq) AS s FROM entries WHERE topic_id = ? AND kind = 'checkpoint'",
+			)
+			.get(t.id) as { s: number | null };
+
+		let count: number;
+		if (lastCheckpoint.s === null) {
+			count = (ctx.db
+				.prepare("SELECT COUNT(*) AS c FROM entries WHERE topic_id = ?")
+				.get(t.id) as { c: number }).c;
+		} else {
+			count = (ctx.db
+				.prepare("SELECT COUNT(*) AS c FROM entries WHERE topic_id = ? AND seq > ?")
+				.get(t.id, lastCheckpoint.s) as { c: number }).c;
+		}
+
+		if (count < AUTO_CHECKPOINT_THRESHOLD) continue;
+
+		const totalEntries = (ctx.db
+			.prepare("SELECT COUNT(*) AS c FROM entries WHERE topic_id = ?")
+			.get(t.id) as { c: number }).c;
+		const involved = getInvolvedAgentNames(ctx, t.id);
+		const recent = findRecentEntriesForCheckpoint(ctx, t.id, 10);
+
+		const body = buildAutoCheckpointBody(
+			t.id, count, totalEntries, involved, recent,
+		);
+		const id = randomUUID();
+		const ts = now;
+		insertEntry.run(id, ts, t.id, AUTO_AUTHOR, body);
+		updateLastActivity.run(ts, t.id);
+		process.stderr.write(
+			`[orch:auto-checkpoint] wrote checkpoint for ${t.id} (${count} entries since last)\n`,
+		);
+	}
+}
+
+/**
+ * Background tick: for each open topic idle for > 24h with no
+ * live agents, mark the topic closed and post a wrap-up entry.
+ * See design § D6 in the auto-topic-lifecycle change.
+ */
+export function autoCloseTopics(ctx: LifecycleCtx): void {
+	const now = Date.now();
+	const cutoff = now - AUTO_CLOSE_IDLE_MS;
+
+	const insertEntry = ctx.db.prepare(
+		`INSERT INTO entries (id, ts, topic_id, author, kind, body, parent_entry, mentions, requires_confirmation_from)
+		 VALUES (?, ?, ?, ?, 'summary', ?, NULL, '[]', '[]')`,
+	);
+	const closeTopic = ctx.db.prepare(
+		"UPDATE topics SET status = 'closed' WHERE id = ?",
+	);
+
+	const openTopics = ctx.db
+		.prepare("SELECT id, last_activity_at FROM topics WHERE status != 'closed' AND last_activity_at < ?")
+		.all(cutoff) as Array<{ id: string; last_activity_at: number }>;
+
+	for (const t of openTopics) {
+		const involved = getInvolvedAgentNames(ctx, t.id);
+
+		// If any involved agent is alive, skip.
+		if (involved.length > 0 && hasLiveInvolvedAgent(ctx, involved)) continue;
+
+		const totalEntries = (ctx.db
+			.prepare("SELECT COUNT(*) AS c FROM entries WHERE topic_id = ?")
+			.get(t.id) as { c: number }).c;
+		const checkpointCount = (ctx.db
+			.prepare(
+				"SELECT COUNT(*) AS c FROM entries WHERE topic_id = ? AND kind = 'checkpoint'",
+			)
+			.get(t.id) as { c: number }).c;
+
+		const body = buildWrapUpBody(
+			t.id, totalEntries, checkpointCount, involved, t.last_activity_at,
+		);
+		const id = randomUUID();
+		const ts = now;
+		insertEntry.run(id, ts, t.id, AUTO_AUTHOR, body);
+		closeTopic.run(t.id);
+		process.stderr.write(
+			`[orch:auto-close] closed ${t.id} (idle for ${Math.round((now - t.last_activity_at) / 3600000)}h, ${totalEntries} entries)\n`,
+		);
+	}
+}
+
+/**
+ * Get the names of all agents involved in a topic, sorted.
+ */
+function getInvolvedAgentNames(ctx: LifecycleCtx, topicId: string): string[] {
+	const rows = ctx.db
+		.prepare("SELECT agent_name FROM topic_involved WHERE topic_id = ? ORDER BY agent_name")
+		.all(topicId) as Array<{ agent_name: string }>;
+	return rows.map((r) => r.agent_name);
+}
+
+/**
+ * Return true if any of the given agent names has a row in the
+ * `agents` table with `status='alive'`. This is the liveness
+ * check from the persistent-agent-registry change.
+ */
+function hasLiveInvolvedAgent(ctx: LifecycleCtx, agentNames: string[]): boolean {
+	if (agentNames.length === 0) return false;
+	const placeholders = agentNames.map(() => "?").join(",");
+	const row = ctx.db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM agents WHERE name IN (${placeholders}) AND status = 'alive'`,
+		)
+		.get(...agentNames) as { n: number };
+	return row.n > 0;
+}
+
+/**
+ * Find the most recent N entries in a topic for the auto-checkpoint body.
+ * Returns entries with author, ts, body, and agoMin (minutes since).
+ */
+function findRecentEntriesForCheckpoint(
+	ctx: LifecycleCtx,
+	topicId: string,
+	limit: number,
+): Array<{ author: string; ts: number; body: string; agoMin: number }> {
+	const rows = ctx.db
+		.prepare(
+			"SELECT author, ts, body FROM entries WHERE topic_id = ? ORDER BY seq DESC LIMIT ?",
+		)
+		.all(topicId, limit) as Array<{ author: string; ts: number; body: string }>;
+	const now = Date.now();
+	return rows.map((r) => ({
+		...r,
+		agoMin: Math.max(0, Math.round((now - r.ts) / 60000)),
+	}));
+}
+
+/**
+ * Build the auto-checkpoint body. Plain markdown. See design § D3.
+ */
+function buildAutoCheckpointBody(
+	topicId: string,
+	entriesSinceLastCheckpoint: number,
+	totalEntries: number,
+	involvedAgents: string[],
+	recentEntries: Array<{ author: string; ts: number; body: string; agoMin: number }>,
+): string {
+	const lines: string[] = [];
+	lines.push(`# Auto-checkpoint (entry count: ${totalEntries})`);
+	lines.push("");
+	lines.push("## Current state");
+	lines.push(`- Entries since last checkpoint: ${entriesSinceLastCheckpoint}`);
+	lines.push(`- Total entries: ${totalEntries}`);
+	lines.push(`- Involved agents: ${involvedAgents.length > 0 ? involvedAgents.join(", ") : "(none)"}`);
+	if (recentEntries.length > 0) {
+		lines.push("");
+		lines.push(`## Recent activity (last ${recentEntries.length} entries)`);
+		for (const e of recentEntries) {
+			const preview = e.body.length > 80 ? e.body.slice(0, 80) + "..." : e.body;
+			lines.push(`- ${e.author} (${e.agoMin}m ago): ${preview}`);
+		}
+	}
+	lines.push("");
+	lines.push("## Next action");
+	lines.push("- Continue work or write a manual checkpoint.");
+	return lines.join("\n");
+}
+
+/**
+ * Build the wrap-up body for auto-close. Plain markdown. See design § D4.
+ */
+function buildWrapUpBody(
+	topicId: string,
+	totalEntries: number,
+	checkpointCount: number,
+	involvedAgents: string[],
+	lastActivityAt: number,
+): string {
+	const lines: string[] = [];
+	lines.push(`# Wrap-up: ${topicId}`);
+	lines.push("");
+	lines.push(`Topic was auto-closed after 24h of inactivity with no live agents.`);
+	lines.push("");
+	lines.push("## Summary");
+	lines.push(`- Total entries: ${totalEntries}`);
+	lines.push(`- Checkpoints: ${checkpointCount}`);
+	lines.push(`- Involved agents: ${involvedAgents.length > 0 ? involvedAgents.join(", ") : "(none)"}`);
+	lines.push(`- Last activity: ${new Date(lastActivityAt).toISOString()}`);
+	return lines.join("\n");
+}
+
 /**
  * Record a nudge event. Called by the auto-nudge background tick
  * and by the admin_inject path (manual nudge). Used by reputation.

@@ -78,6 +78,9 @@ export class Orchestrator {
 	lastAutoNudgeAt = new Map<string, Map<string, number>>();
 	/** Per-session tally of auto-nudges sent. */
 	autoNudgesSent = 0;
+	/** Background tick for auto-checkpoint + auto-close. Holder so
+	 *  the lifecycle module can read/write the handle. */
+	autoLifecycleTickHandle: { current: NodeJS.Timeout | null } = { current: null };
 
 	constructor(dataDir: string, opts: { autoNudge?: Partial<AutoNudgeOptions> } = {}) {
 		this.dataDir = dataDir;
@@ -140,6 +143,28 @@ export class Orchestrator {
 		} else {
 			process.stderr.write(`[orch:auto-nudge] disabled\n`);
 		}
+
+		// Background tick: auto-checkpoint + auto-close. Every 5
+		// minutes. Coarse enough to not hammer the DB; fast enough
+		// that the dev sees auto-checkpoints shortly after a topic
+		// crosses 30 entries.
+		this.autoLifecycleTickHandle.current = setInterval(() => {
+			try {
+				this.autoLifecycle();
+			} catch (err) {
+				process.stderr.write(
+					`[orch:auto-lifecycle] tick error: ${err instanceof Error ? err.message : err}\n`,
+				);
+			}
+		}, 5 * 60 * 1000);
+		process.stderr.write(`[orch:auto-lifecycle] enabled, check every 5m\n`);
+	}
+
+	/** Run both auto-topic-lifecycle operations. Public so the tick
+	 *  can call it; also useful for manual triggering. */
+	autoLifecycle(): void {
+		lifecycle.autoCheckpoint(this as unknown as LifecycleCtx);
+		lifecycle.autoCloseTopics(this as unknown as LifecycleCtx);
 	}
 
 	/** Spawn an agent and register it. Delegates to the lifecycle module. */
@@ -165,6 +190,10 @@ export class Orchestrator {
 		if (this.autoNudgeTickHandle) {
 			clearInterval(this.autoNudgeTickHandle);
 			this.autoNudgeTickHandle = null;
+		}
+		if (this.autoLifecycleTickHandle.current) {
+			clearInterval(this.autoLifecycleTickHandle.current);
+			this.autoLifecycleTickHandle.current = null;
 		}
 		const agents = [...this.agents.values()];
 		this.agents.clear();
