@@ -48,7 +48,7 @@ export interface LifecycleCtx {
 	agents: Map<string, AgentProcess>;
 	autoNudge: AutoNudgeOptions;
 	startedAt: number;
-	lastAutoNudgeAt: Map<string, number>;
+	lastAutoNudgeAt: Map<string, Map<string, number>>;
 	// Mutable counters — plain `number` to match the facade's public API.
 	autoNudgesSent: number;
 	budgetHits: number;
@@ -234,15 +234,21 @@ export function clearAutoNudgeStateFor(ctx: LifecycleCtx, name: string): void {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Background tick: for each alive agent that's been silent for more
- * than the threshold AND has never been nudged for the current
- * silence, send a nudge. Once per silence — a new silence starts
- * when the agent posts, so we can nudge again for a new silence even
- * if the last nudge was recent.
+ * Background tick: for each (agent, topic) pair where the agent is
+ * silent in that topic, send a topic-specific nudge. Per-topic
+ * cooldowns mean an agent silent in N topics can be nudged up to N
+ * times per overall silence — one per topic.
  *
- * Only nudges agents that are involved in at least one open topic.
- * Agents with no topic context are skipped (nothing for them to
- * "do" or "be stuck on").
+ * A nudge fires when:
+ *   - the agent is alive (in ctx.agents),
+ *   - the agent is in the topic's `topic_involved`,
+ *   - the topic is open (status != 'closed'),
+ *   - the agent's last entry in this specific topic is older than
+ *     `autoNudge.afterMinutes`, AND
+ *   - we haven't already nudged for this (agent, topic) silence.
+ *
+ * Agents with no open topic context produce zero (agent, topic) pairs
+ * and are silently skipped (nothing for them to do).
  */
 export function checkAutoNudge(ctx: LifecycleCtx): void {
 	const now = Date.now();
@@ -252,66 +258,132 @@ export function checkAutoNudge(ctx: LifecycleCtx): void {
 		// Skip if the agent process is gone (e.g. already shut down).
 		if (!agent) continue;
 
-		// Find the most recent entry by this agent. We order by ts
-		// (time of activity), not seq (insert order), because entries
-		// can be backdated (e.g. seeded in tests, imported from
-		// another mesh) and we want the "most recent activity" not
-		// the "most recent insert".
-		const lastEntry = ctx.db
-			.prepare(
-				"SELECT seq, ts, topic_id, body FROM entries WHERE author = ? ORDER BY ts DESC LIMIT 1",
-			)
-			.get(name) as { seq: number; ts: number; topic_id: string; body: string } | undefined;
-
-		// If the agent has never posted, "silence started" is the
-		// orchestrator's start time. (We don't nudge a freshly spawned
-		// agent that hasn't had a chance to do anything yet.)
-		const silenceStartedAt = lastEntry?.ts ?? ctx.startedAt;
-
-		// Not silent long enough? Skip.
-		if (now - silenceStartedAt < thresholdMs) continue;
-
-		// Have we already nudged for this silence? If the last nudge
-		// was after the silence started, yes — don't flood.
-		const lastNudgeAt = ctx.lastAutoNudgeAt.get(name) ?? 0;
-		if (lastNudgeAt >= silenceStartedAt) continue;
-
-		// Is the agent involved in at least one open topic? If not,
-		// there's nothing for them to do, so nudging is noise.
-		const openTopic = ctx.db
+		// Find all open topics the agent is involved in, ordered by
+		// most recently active first. An agent silent in topic X but
+		// active in topic Y will be iterated for both, but only
+		// nudged about the ones where they are actually silent.
+		const openTopics = ctx.db
 			.prepare(
 				`SELECT t.id FROM topics t
 				 JOIN topic_involved ti ON ti.topic_id = t.id
 				 WHERE ti.agent_name = ? AND t.status != 'closed'
-				 ORDER BY t.last_activity_at DESC LIMIT 1`,
+				 ORDER BY t.last_activity_at DESC`,
 			)
-			.get(name) as { id: string } | undefined;
-		if (!openTopic) continue;
+			.all(name) as Array<{ id: string }>;
 
-		// Send the nudge. Use the same channel as `admin_inject` (a
-		// `prompt` with `streamingBehavior: "steer"`), so it lands as
-		// a normal message in the agent's next turn.
-		ctx.lastAutoNudgeAt.set(name, now);
-		ctx.autoNudgesSent++;
-		// Persist the nudge for reputation (response rate, response time).
-		recordNudge(ctx, name, "auto", openTopic.id);
-		const silentFor = Math.round((now - silenceStartedAt) / 60000);
-		const lastBody = lastEntry
-			? lastEntry.body.length > 60
-				? lastEntry.body.slice(0, 60) + "..."
-				: lastEntry.body
-			: "(no entries yet)";
-		process.stderr.write(
-			`[orch:auto-nudge] nudging ${name} in ${openTopic.id} (silent for ${silentFor}m, last entry: ${lastBody})\n`,
-		);
-		agent
-			.send({ type: "prompt", message: ctx.autoNudge.message, streamingBehavior: "steer" })
-			.catch((err) => {
-				process.stderr.write(
-					`[orch:auto-nudge] nudge to ${name} failed: ${err instanceof Error ? err.message : err}\n`,
-				);
-			});
+		for (const topic of openTopics) {
+			// Per-topic silence: find this agent's most recent entry
+			// in this specific topic. Order by ts (time of activity),
+			// not seq (insert order), because entries can be backdated.
+			const lastInTopic = ctx.db
+				.prepare(
+					"SELECT ts, body FROM entries WHERE author = ? AND topic_id = ? ORDER BY ts DESC LIMIT 1",
+				)
+				.get(name, topic.id) as { ts: number; body: string } | undefined;
+
+			// If the agent has never posted in this topic, "silence
+			// started" is the orchestrator's start time.
+			const silenceStartedAt = lastInTopic?.ts ?? ctx.startedAt;
+
+			// Not silent long enough in this topic? Skip.
+			if (now - silenceStartedAt < thresholdMs) continue;
+
+			// Per-(agent, topic) cooldown.
+			const lastNudgeAt = ctx.lastAutoNudgeAt.get(name)?.get(topic.id) ?? 0;
+			if (lastNudgeAt >= silenceStartedAt) continue;
+
+			// Build the topic-specific nudge content.
+			const recent = findRecentEntriesFromOthers(ctx, topic.id, name, 3);
+			const silentFor = Math.round((now - silenceStartedAt) / 60000);
+			const message = buildTopicNudgeMessage(name, topic.id, lastInTopic, recent, silentFor);
+
+			// Record the nudge. The set() on the inner map must happen
+			// before agent.send() so a re-entrant tick doesn't double-nudge.
+			let perTopic = ctx.lastAutoNudgeAt.get(name);
+			if (!perTopic) {
+				perTopic = new Map<string, number>();
+				ctx.lastAutoNudgeAt.set(name, perTopic);
+			}
+			perTopic.set(topic.id, now);
+			ctx.autoNudgesSent++;
+			// Persist the nudge for reputation (response rate, response time).
+			recordNudge(ctx, name, "auto", topic.id);
+
+			const lastBody = lastInTopic
+				? lastInTopic.body.length > 60
+					? lastInTopic.body.slice(0, 60) + "..."
+					: lastInTopic.body
+				: "(no entries in this topic yet)";
+			process.stderr.write(
+				`[orch:auto-nudge] nudging ${name} in ${topic.id} (silent for ${silentFor}m, last entry in topic: ${lastBody})\n`,
+			);
+			agent
+				.send({ type: "prompt", message, streamingBehavior: "steer" })
+				.catch((err) => {
+					process.stderr.write(
+						`[orch:auto-nudge] nudge to ${name} failed: ${err instanceof Error ? err.message : err}\n`,
+					);
+				});
+		}
 	}
+}
+
+/**
+ * Build the topic-specific nudge message. The format is intentionally
+ * short (a few lines): topic id, silence duration, the agent's last
+ * entry in this topic, recent entries from other agents, and a soft
+ * "pick one or post a status" prompt.
+ */
+function buildTopicNudgeMessage(
+	agentName: string,
+	topicId: string,
+	lastInTopic: { ts: number; body: string } | undefined,
+	recent: Array<{ author: string; ts: number; body: string; agoMin: number }>,
+	silentForMin: number,
+): string {
+	const lines: string[] = [];
+	lines.push(`[mesh auto-nudge] you've been silent in topic "${topicId}" for ${silentForMin}m.`);
+	if (lastInTopic) {
+		const preview = lastInTopic.body.length > 100
+			? lastInTopic.body.slice(0, 100) + "..."
+			: lastInTopic.body;
+		lines.push("");
+		lines.push(`last entry by you in this topic: ${JSON.stringify(preview)}`);
+	} else {
+		lines.push("");
+		lines.push(`you have not posted in this topic yet.`);
+	}
+	if (recent.length > 0) {
+		lines.push("");
+		lines.push(`recent entries from other agents in this topic:`);
+		for (const r of recent) {
+			const preview = r.body.length > 80 ? r.body.slice(0, 80) + "..." : r.body;
+			lines.push(`  - ${r.author} (${r.agoMin}m ago): ${JSON.stringify(preview)}`);
+		}
+	}
+	lines.push("");
+	lines.push(`suggested next action: pick one of the above, post a status, or post a checkpoint if the topic has grown big.`);
+	return lines.join("\n");
+}
+
+/**
+ * Find the most recent N entries in a topic from agents OTHER than
+ * `excludeAgent`. Used by the topic-specific nudge to give the
+ * nudged agent context on what their peers have been up to.
+ */
+function findRecentEntriesFromOthers(
+	ctx: LifecycleCtx,
+	topicId: string,
+	excludeAgent: string,
+	limit: number,
+): Array<{ author: string; ts: number; body: string; agoMin: number }> {
+	const rows = ctx.db
+		.prepare(
+			"SELECT author, ts, body FROM entries WHERE topic_id = ? AND author != ? ORDER BY ts DESC LIMIT ?",
+		)
+		.all(topicId, excludeAgent, limit) as Array<{ author: string; ts: number; body: string }>;
+	const now = Date.now();
+	return rows.map((r) => ({ ...r, agoMin: Math.max(0, Math.round((now - r.ts) / 60000)) }));
 }
 
 /**

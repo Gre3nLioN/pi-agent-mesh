@@ -176,8 +176,13 @@ async function main(): Promise<void> {
 		const nudge = (orch as any).__lastNudge;
 		assert(nudge, `no nudge was sent`);
 		assert(nudge.agent === "silent-agent", `nudged ${nudge.agent}`);
-		assert(nudge.msg.message === "TEST_NUDGE: please post a status", `message=${nudge.msg.message}`);
+		// After the per-(agent, topic) refactor, the nudge is topic-specific.
+		// It still uses streamingBehavior "steer" but the message is no
+		// longer the configured string — it includes the topic id, the
+		// agent's last entry, and a suggested next action.
 		assert(nudge.msg.streamingBehavior === "steer", `streamingBehavior=${nudge.msg.streamingBehavior}`);
+		assert(nudge.msg.message.includes("auto-nudge-test-aaaa"), `message missing topic id: ${nudge.msg.message}`);
+		assert(nudge.msg.message.includes("suggested next action"), `message missing next-action hint: ${nudge.msg.message}`);
 	});
 
 	await test("a recently-active agent is NOT nudged", async () => {
@@ -241,9 +246,14 @@ async function main(): Promise<void> {
 		// firmly in a "new silence" that has been going for 2 min.
 		const Database = (await import("better-sqlite3")).default;
 		const db = new Database(resolve(dataDir, "mesh.db"));
-		// Backdate the lastAutoNudgeAt map: the previous nudge was
-		// 5 min ago (before the new silence started).
-		(orch as any).lastAutoNudgeAt.set("silence-break-agent", Date.now() - 5 * 60 * 1000);
+		// Backdate the lastAutoNudgeAt map: the previous nudge for
+		// THIS (agent, topic) pair was 5 min ago (before the new
+		// silence started). The new shape is
+		// Map<agent, Map<topic, ts>>.
+		const inner = (orch as any).lastAutoNudgeAt.get("silence-break-agent") as Map<string, number> | undefined;
+		if (inner) {
+			inner.set("auto-nudge-test-break-aa", Date.now() - 5 * 60 * 1000);
+		}
 		// Insert a new entry backdated 2 min ago. This is the agent's
 		// "I'm back" post — a new silence started 2 min ago.
 		db.prepare(

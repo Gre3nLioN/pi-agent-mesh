@@ -72,8 +72,10 @@ export class Orchestrator {
 
 	/** Background tick for auto-nudge. */
 	autoNudgeTickHandle: NodeJS.Timeout | null = null;
-	/** Per-agent: timestamp of the last auto-nudge we sent. */
-	lastAutoNudgeAt = new Map<string, number>();
+	/** Per-(agent, topic) timestamp of the last auto-nudge we sent. The
+	 *  inner map is keyed by topic id; missing entry means "no nudge
+	 *  yet for this (agent, topic) pair." Cleared per agent on exit. */
+	lastAutoNudgeAt = new Map<string, Map<string, number>>();
 	/** Per-session tally of auto-nudges sent. */
 	autoNudgesSent = 0;
 
