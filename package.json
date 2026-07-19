@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-mesh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Peer-to-peer pi agent mesh — durable scratchpad + topic bus + status UI",
   "type": "module",
   "keywords": [
@@ -24,8 +24,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/cli.js",
   "bin": {
     "mesh": "./bin/mesh"
   },
